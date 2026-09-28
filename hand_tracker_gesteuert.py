@@ -1,38 +1,36 @@
 """
-Hand Tracker AR Drawing App mit Formen-Menü
+Hand Tracker AR Drawing App - stabilere Version
 
 Installation:
-    pip install opencv-python mediapipe
+    pip install opencv-python mediapipe numpy
 
 Start:
     python hand_tracker_gesteuert.py
 
 Steuerung:
-    Zeigefinger                Maus/Pointer bewegen
-    Daumen + Zeigefinger       Linksklick / Auswahl
-    Daumen + Mittelfinger      Formen-Menü öffnen
-    Im Menü: Zeigefinger auf Form halten -> wählen
-    Ein Shape auswählen und mit Zeigefinger ziehen
-    Zwei Finger nahe am Shape -> Größe ändern
-    Q / ESC                    Beenden
-    H                         Hilfe
-    C                         Shapes löschen
-    F                         Vollbild
+    Zeigefinger            Pointer bewegen
+    Daumen + Zeigefinger   Auswahl / Klick
+    Daumen + Mittelfinger  Formen-Menü öffnen
+    2 Finger auf Form      Größe ändern
+    Form mit Zeigefinger   verschieben
+    Q / ESC                Beenden
+    C                     Formen löschen
+    F                     Vollbild an/aus
+    H                     Hilfe an/aus
 
-Beschreibung:
-    Diese App zeichnet live Formen in der Kamera, wie AR-Objekte im Raum.
-    Die Formen erscheinen im Bild und können verschoben und vergrößert werden.
+Ziel:
+    Formen wie Kreis, Quadrat, Dreieck, Stern, Herz erscheinen live in der Kamera.
 """
 
 import math
 import os
 import time
 import urllib.request
-from collections import deque
 from datetime import datetime
 
 import cv2
 import mediapipe as mp
+import numpy as np
 from mediapipe.tasks import python as mp_python
 from mediapipe.tasks.python import vision
 
@@ -41,12 +39,12 @@ MODEL_URL = (
     "hand_landmarker/float16/1/hand_landmarker.task"
 )
 MODEL_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "hand_landmarker.task")
-WINDOW_NAME = "AR Shapes"
+WINDOW_NAME = "AR Drawing App"
 
-GREEN = (0, 255, 0)
-DARK_GREEN = (0, 150, 0)
 WHITE = (255, 255, 255)
 BLACK = (0, 0, 0)
+GREEN = (0, 255, 0)
+DARK_GREEN = (0, 150, 0)
 RED = (0, 0, 255)
 YELLOW = (0, 255, 255)
 BLUE = (255, 100, 0)
@@ -54,7 +52,6 @@ CYAN = (255, 255, 0)
 ORANGE = (0, 165, 255)
 PURPLE = (255, 0, 255)
 
-# Hand landmarks
 WRIST = 0
 THUMB_IP = 3
 THUMB_TIP = 4
@@ -95,39 +92,40 @@ def ensure_model():
         urllib.request.urlretrieve(MODEL_URL, MODEL_PATH)
         print("Modell geladen.")
     except Exception as e:
-        raise SystemExit(f"Download fehlgeschlagen: {e}\nLade es manuell herunter und lege es hier ab:\n{MODEL_PATH}")
+        raise SystemExit(f"Download fehlgeschlagen: {e}\nLade die Datei manuell herunter:\n{MODEL_URL}\nund lege sie hier ab:\n{MODEL_PATH}")
 
 
 def dist(a, b):
     return math.hypot(a[0] - b[0], a[1] - b[1])
 
 
-def midpoint(a, b):
-    return ((a[0] + b[0]) / 2, (a[1] + b[1]) / 2)
-
-
 def to_pixels(landmarks, w, h):
     return [(int(lm.x * w), int(lm.y * h)) for lm in landmarks]
 
 
-def in_circle(point, cx, cy, r):
-    return (point[0] - cx) ** 2 + (point[1] - cy) ** 2 <= r ** 2
+def point_in_shape(pt, shape):
+    x, y = pt
+    sx, sy = shape["x"], shape["y"]
+    s = shape["size"]
+    if shape["kind"] == "circle":
+        return (x - sx) ** 2 + (y - sy) ** 2 <= s ** 2
+    if shape["kind"] == "square":
+        return abs(x - sx) <= s and abs(y - sy) <= s
+    if shape["kind"] == "triangle":
+        return abs(x - sx) + abs(y - sy) <= s * 1.2
+    if shape["kind"] == "star":
+        return (x - sx) ** 2 + (y - sy) ** 2 <= (s * 1.3) ** 2
+    if shape["kind"] == "heart":
+        return (x - sx) ** 2 + (y - sy) ** 2 <= (s * 1.5) ** 2
+    return False
 
 
-def get_finger_state(points):
-    # returns [thumb, index, middle, ring, pinky]
-    # with robust check using angle and distance
-    thumb = dist(points[THUMB_TIP], points[WRIST]) > dist(points[THUMB_IP], points[WRIST]) * 1.15 and dist(points[THUMB_TIP], points[WRIST]) > 35
-    index = dist(points[INDEX_TIP], points[WRIST]) > dist(points[INDEX_PIP], points[WRIST]) * 1.1 and dist(points[INDEX_TIP], points[WRIST]) > 60
-    middle = dist(points[MIDDLE_TIP], points[WRIST]) > dist(points[MIDDLE_PIP], points[WRIST]) * 1.12 and dist(points[MIDDLE_TIP], points[WRIST]) > 70
-    ring = dist(points[RING_TIP], points[WRIST]) > dist(points[RING_PIP], points[WRIST]) * 1.1 and dist(points[RING_TIP], points[WRIST]) > 60
-    pinky = dist(points[PINKY_TIP], points[WRIST]) > dist(points[PINKY_PIP], points[WRIST]) * 1.08 and dist(points[PINKY_TIP], points[WRIST]) > 55
-    return [thumb, index, middle, ring, pinky]
+def make_shape(kind, x, y, size, color):
+    return {"kind": kind, "x": x, "y": y, "size": size, "color": color, "selected": False}
 
 
-def pinch_ratio(points, tip_index):
-    palm = dist(points[WRIST], points[MIDDLE_MCP]) + 1e-6
-    return dist(points[THUMB_TIP], points[tip_index]) / palm
+def point_list_to_np(points):
+    return np.array(points, dtype=np.int32)
 
 
 def draw_text(img, text, org, scale=0.7, color=WHITE, thickness=2):
@@ -148,97 +146,67 @@ def draw_hand(frame, pts, show_lines=True):
         cv2.circle(frame, p, r, BLACK, 1, cv2.LINE_AA)
 
 
-def draw_pinch_link(frame, pts, tip):
-    cv2.line(frame, pts[THUMB_TIP], pts[tip], YELLOW, 2, cv2.LINE_AA)
-
-
-def draw_menu(frame, center, active_index):
-    cx, cy = center
-    radius = 140
-    for i, name in enumerate(MENU_OPTIONS):
-        ang = -math.pi / 2 + i * (2 * math.pi / len(MENU_OPTIONS))
-        x = cx + int(radius * math.cos(ang))
-        y = cy + int(radius * math.sin(ang))
-        color = MENU_COLORS[name]
-        if i == active_index:
-            out = 26
-            inr = 48
-            cv2.circle(frame, (x, y), 58, color, 4, cv2.LINE_AA)
-            cv2.circle(frame, (x, y), 34, (255, 255, 255), 2, cv2.LINE_AA)
-        else:
-            out = 24
-            inr = 42
-            cv2.circle(frame, (x, y), 48, color, 2, cv2.LINE_AA)
-        cv2.circle(frame, (x, y), inr, color, -1, cv2.LINE_AA)
-        cv2.putText(frame, name[:1].upper(), (x - 7, y + 7), cv2.FONT_HERSHEY_SIMPLEX, 0.8, BLACK, 2, cv2.LINE_AA)
-
-    cv2.circle(frame, center, 14, WHITE, -1, cv2.LINE_AA)
-    cv2.circle(frame, center, 18, YELLOW, 2, cv2.LINE_AA)
-
-
-# ---------- Shapes ----------
-
-def make_shape(kind, x, y, size, color):
-    return {
-        "kind": kind,
-        "x": x,
-        "y": y,
-        "size": size,
-        "color": color,
-    }
-
-
 def draw_shape(frame, shape):
-    x, y, size = shape["x"], shape["y"], shape["size"]
+    x, y, size = int(shape["x"]), int(shape["y"]), int(shape["size"])
     kind = shape["kind"]
     color = shape["color"]
 
     if kind == "circle":
-        cv2.circle(frame, (int(x), int(y)), int(size), color, 4, cv2.LINE_AA)
+        cv2.circle(frame, (x, y), size, color, 4, cv2.LINE_AA)
     elif kind == "square":
-        s = int(size)
-        pts = [(x-s, y-s), (x+s, y-s), (x+s, y+s), (x-s, y+s)]
-        pts = np_to_cv([(int(px), int(py)) for px, py in pts])
-        cv2.polylines(frame, [pts], True, color, 4, cv2.LINE_AA)
+        cv2.rectangle(frame, (x - size, y - size), (x + size, y + size), color, 4, cv2.LINE_AA)
     elif kind == "triangle":
-        s = int(size)
-        pts = [(x, y-s), (x+s, y+s), (x-s, y+s)]
-        pts = np_to_cv([(int(px), int(py)) for px, py in pts])
+        pts = np.array([(x, y - size), (x + size, y + size), (x - size, y + size)], dtype=np.int32)
         cv2.polylines(frame, [pts], True, color, 4, cv2.LINE_AA)
     elif kind == "star":
-        points = []
+        star_pts = []
         for i in range(10):
             ang = -math.pi / 2 + i * math.pi / 5
             r = size if i % 2 == 0 else size * 0.45
             px = x + r * math.cos(ang)
             py = y + r * math.sin(ang)
-            points.append((int(px), int(py)))
-        cv2.polylines(frame, [np_to_cv(points)], True, color, 4, cv2.LINE_AA)
+            star_pts.append((int(px), int(py)))
+        cv2.polylines(frame, [point_list_to_np(star_pts)], True, color, 4, cv2.LINE_AA)
     elif kind == "heart":
-        # simple heart outline
-        for i in range(0, 180, 5):
+        pts = []
+        for i in range(0, 360, 5):
             ang = math.radians(i)
-            x1 = size * 16 * math.sin(ang) ** 3
-            y1 = -size * (13 * math.cos(ang) - 5 * math.cos(2 * ang) - 2 * math.cos(3 * ang) - math.cos(4 * ang))
-            px = int(x + x1 / 18)
-            py = int(y + y1 / 18)
-            if i == 0:
-                pts = [(px, py)]
-            else:
-                pts.append((px, py))
-        cv2.polylines(frame, [np_to_cv(pts)], False, color, 4, cv2.LINE_AA)
+            sx = 16 * math.sin(ang) ** 3
+            sy = -(13 * math.cos(ang) - 5 * math.cos(2 * ang) - 2 * math.cos(3 * ang) - math.cos(4 * ang))
+            px = int(x + sx * size / 18)
+            py = int(y + sy * size / 18)
+            pts.append((px, py))
+        cv2.polylines(frame, [point_list_to_np(pts)], False, color, 4, cv2.LINE_AA)
 
-    # highlight selection
     if shape.get("selected"):
-        cv2.circle(frame, (int(x), int(y)), int(size + 14), (255, 255, 255), 2, cv2.LINE_AA)
+        cv2.circle(frame, (x, y), size + 12, (255, 255, 255), 2, cv2.LINE_AA)
 
 
-def np_to_cv(points):
-    import numpy as np
-    return np.array(points, dtype=np.int32)
+def draw_menu(frame, center, active_index):
+    cx, cy = center
+    radius = 150
+    for i, kind in enumerate(MENU_OPTIONS):
+        ang = -math.pi / 2 + i * (2 * math.pi / len(MENU_OPTIONS))
+        x = int(cx + radius * math.cos(ang))
+        y = int(cy + radius * math.sin(ang))
+        color = MENU_COLORS[kind]
+        cv2.circle(frame, (x, y), 42, color, 3, cv2.LINE_AA)
+        cv2.circle(frame, (x, y), 24, color, -1, cv2.LINE_AA)
+        cv2.putText(frame, kind[0].upper(), (x - 7, y + 7), cv2.FONT_HERSHEY_SIMPLEX, 0.8, BLACK, 2, cv2.LINE_AA)
+        if i == active_index:
+            cv2.circle(frame, (x, y), 52, WHITE, 2, cv2.LINE_AA)
+    cv2.circle(frame, center, 20, WHITE, -1, cv2.LINE_AA)
+    cv2.circle(frame, center, 28, YELLOW, 2, cv2.LINE_AA)
 
 
-# ---------- Main ----------
+def get_fingers(points):
+    thumb = dist(points[THUMB_TIP], points[WRIST]) > dist(points[THUMB_IP], points[WRIST]) * 1.15 and dist(points[THUMB_TIP], points[WRIST]) > 35
+    index = dist(points[INDEX_TIP], points[WRIST]) > dist(points[INDEX_PIP], points[WRIST]) * 1.1 and dist(points[INDEX_TIP], points[WRIST]) > 60
+    middle = dist(points[MIDDLE_TIP], points[WRIST]) > dist(points[MIDDLE_PIP], points[WRIST]) * 1.12 and dist(points[MIDDLE_TIP], points[WRIST]) > 70
+    ring = dist(points[RING_TIP], points[WRIST]) > dist(points[RING_PIP], points[WRIST]) * 1.1 and dist(points[RING_TIP], points[WRIST]) > 60
+    pinky = dist(points[PINKY_TIP], points[WRIST]) > dist(points[PINKY_PIP], points[WRIST]) * 1.08 and dist(points[PINKY_TIP], points[WRIST]) > 55
+    return [thumb, index, middle, ring, pinky]
+
 
 def main():
     ensure_model()
@@ -261,18 +229,16 @@ def main():
     landmarker = vision.HandLandmarker.create_from_options(options)
 
     shapes = []
-    selected_shape_id = None
-    drag_shape_id = None
-    resize_shape_id = None
-    drag_prev = None
-    resize_base_dist = None
-    resize_base_size = None
-    menu_center = None
+    selected_shape_index = None
+    drag_shape_index = None
+    drag_prev_pt = None
     menu_open = False
-    menu_active_index = 0
+    menu_center = None
+    menu_active = 0
+
     show_help = True
     fullscreen = True
-    start = time.time()
+    start_time = time.time()
     last_ts = -1
     fps = 0.0
 
@@ -283,7 +249,6 @@ def main():
         while cap.isOpened():
             ok, frame = cap.read()
             if not ok:
-                print("Kein Bild von der Kamera.")
                 break
 
             frame = cv2.flip(frame, 1)
@@ -291,133 +256,158 @@ def main():
             rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
 
-            ts = int((time.time() - start) * 1000)
+            ts = int((time.time() - start_time) * 1000)
             if ts <= last_ts:
                 ts = last_ts + 1
             last_ts = ts
 
             result = landmarker.detect_for_video(mp_image, ts)
             pointer = None
-            pointer_index = None
-            selection = None
-            menu_target = None
-            menu_active_index = 0
+            pointer_hand_index = None
+            index_finger_open = False
+            thumb_middle_pinch = False
+            thumb_index_pinch = False
 
             for idx, lms in enumerate(result.hand_landmarks):
                 pts = to_pixels(lms, w, h)
-                fingers = get_finger_state(pts)
+                fingers = get_fingers(pts)
                 thumb, index, middle, ring, pinky = fingers
-                hand_label = result.handedness[idx][0].category_name if idx < len(result.handedness) and result.handedness[idx] else "Right"
-
-                # pointer finger = index up, other fingers closed
-                is_pointer = index and not thumb and not middle and not ring and not pinky
-                is_thumb_index = dist(pts[THUMB_TIP], pts[INDEX_TIP]) < 60 and thumb and index
-                is_thumb_middle = dist(pts[THUMB_TIP], pts[MIDDLE_TIP]) < 80 and thumb and middle
 
                 draw_hand(frame, pts, True)
 
-                if is_pointer:
+                # 1) Zeigefinger = Pointer
+                pointer_flag = index and not thumb and not middle and not ring and not pinky
+                if pointer_flag:
                     pointer = pts[INDEX_TIP]
-                    pointer_index = idx
-                    cv2.circle(frame, pointer, 10, CYAN, -1, cv2.LINE_AA)
+                    pointer_hand_index = idx
+                    cv2.circle(frame, pointer, 9, CYAN, -1, cv2.LINE_AA)
+                    index_finger_open = True
 
-                if is_thumb_middle:
-                    menu_target = midpoint(pts[THUMB_TIP], pts[MIDDLE_TIP])
-                    menu_center = menu_target
-                    menu_open = True
-                    draw_pinch_link(frame, pts, MIDDLE_TIP)
+                # 2) Daumen + Zeigefinger = Auswahl / Klick
+                if thumb and index and not middle and not ring and not pinky:
+                    thumb_index_pinch = True
+                    cv2.line(frame, pts[THUMB_TIP], pts[INDEX_TIP], YELLOW, 2, cv2.LINE_AA)
 
-                if is_thumb_index:
-                    draw_pinch_link(frame, pts, INDEX_TIP)
+                # 3) Daumen + Mittelfinger = Menü
+                if thumb and middle and not index and not ring and not pinky:
+                    thumb_middle_pinch = True
+                    cv2.line(frame, pts[THUMB_TIP], pts[MIDDLE_TIP], ORANGE, 2, cv2.LINE_AA)
 
-                # pointer selection and drag
-                for s in shapes:
-                    if dist(pointer, (s["x"], s["y"])) < s["size"] + 20 if pointer is not None else False:
-                        s["selected"] = True
-                        selected_shape_id = id(s)
-                    else:
-                        s["selected"] = False
+                # Auswahl/drag
+                if pointer is not None:
+                    # find shape under pointer
+                    for i, shape in enumerate(shapes):
+                        if point_in_shape(pointer, shape):
+                            shape["selected"] = True
+                            selected_shape_index = i
+                        else:
+                            shape["selected"] = False
 
-                # if pointer is near shape, drag it
-                if pointer is not None and drag_shape_id is None:
-                    for i, s in enumerate(shapes):
-                        if dist(pointer, (s["x"], s["y"])) < s["size"] + 18:
-                            drag_shape_id = i
-                            drag_prev = pointer
-                            selected_shape_id = i
-                            break
-
-                if pointer is not None and drag_shape_id is not None:
-                    if drag_prev is not None:
-                        dx = pointer[0] - drag_prev[0]
-                        dy = pointer[1] - drag_prev[1]
-                        shapes[drag_shape_id]["x"] += dx
-                        shapes[drag_shape_id]["y"] += dy
-                        drag_prev = pointer
-
-                # resize with two fingers if selected
-                if pointer is not None and idx == pointer_index:
-                    if len(shapes) > 0:
-                        for i, s in enumerate(shapes):
-                            if dist(pointer, (s["x"], s["y"])) < s["size"] + 20:
-                                selected_shape_id = i
+                    # if not dragging and selected shape, start drag by pointer
+                    if drag_shape_index is None:
+                        for i, shape in enumerate(shapes):
+                            if point_in_shape(pointer, shape):
+                                drag_shape_index = i
+                                drag_prev_pt = pointer
                                 break
 
-            # menu logic
+                    # move selected shape while dragging
+                    if drag_shape_index is not None and drag_prev_pt is not None:
+                        dx = pointer[0] - drag_prev_pt[0]
+                        dy = pointer[1] - drag_prev_pt[1]
+                        shapes[drag_shape_index]["x"] += dx
+                        shapes[drag_shape_index]["y"] += dy
+                        drag_prev_pt = pointer
+
+                # if user makes a thumb-index pinch, select nearest shape
+                if thumb_index_pinch and pointer is not None:
+                    best_idx = None
+                    best_d = 999999
+                    for i, shape in enumerate(shapes):
+                        d = dist(pointer, (shape["x"], shape["y"]))
+                        if d < best_d:
+                            best_d = d
+                            best_idx = i
+                    if best_idx is not None:
+                        selected_shape_index = best_idx
+                        shapes[best_idx]["selected"] = True
+
+                # if pointer plus two finger hold on shape, resize
+                if pointer is not None and len(shapes) > 0:
+                    for i, shape in enumerate(shapes):
+                        if point_in_shape(pointer, shape):
+                            # rough size scaling by index finger distance to center
+                            # simpler: use pointer distance to center to decide size
+                            d = dist(pointer, (shape["x"], shape["y"]))
+                            if d < 100:
+                                shape["size"] = max(20, min(120, int(d * 0.5)))
+
+            if thumb_middle_pinch:
+                menu_open = True
+                menu_center = (w // 2, h // 2)
+
             if menu_open and menu_center is not None:
-                # determine active option by pointer / index finger
+                menu_radius = 140
                 if pointer is not None:
-                    best = 0
-                    best_dist = 999999
-                    for i, name in enumerate(MENU_OPTIONS):
+                    best_i = 0
+                    best_d = 999999
+                    for i, kind in enumerate(MENU_OPTIONS):
                         ang = -math.pi / 2 + i * (2 * math.pi / len(MENU_OPTIONS))
-                        x = menu_center[0] + int(140 * math.cos(ang))
-                        y = menu_center[1] + int(140 * math.sin(ang))
+                        x = menu_center[0] + int(menu_radius * math.cos(ang))
+                        y = menu_center[1] + int(menu_radius * math.sin(ang))
                         d = dist(pointer, (x, y))
-                        if d < best_dist:
-                            best_dist = d
-                            best = i
-                    menu_active_index = best
-                    if pointer is not None and dist(pointer, menu_center) < 40:
-                        # choose center creates shape
-                        kind = MENU_OPTIONS[menu_active_index]
-                        shapes.append(make_shape(kind, pointer[0], pointer[1], 45, MENU_COLORS[kind]))
+                        if d < best_d:
+                            best_d = d
+                            best_i = i
+                    menu_active = best_i
+                    # if near center, create selected shape
+                    if dist(pointer, menu_center) < 35:
+                        kind = MENU_OPTIONS[best_i]
+                        shapes.append(make_shape(kind, pointer[0], pointer[1], 40, MENU_COLORS[kind]))
                         menu_open = False
                         menu_center = None
-                        selected_shape_id = len(shapes) - 1
-                draw_menu(frame, (int(menu_center[0]), int(menu_center[1])), menu_active_index)
+                        selected_shape_index = len(shapes) - 1
+                draw_menu(frame, menu_center, menu_active)
 
-            # if pointer drag released, clear drag status
+            # if no pointer, release drag
             if pointer is None:
-                drag_shape_id = None
-                drag_prev = None
-                resize_shape_id = None
-                resize_base_dist = None
-                resize_base_size = None
+                drag_shape_index = None
+                drag_prev_pt = None
 
             # draw all shapes
-            for i, s in enumerate(shapes):
-                s["selected"] = i == selected_shape_id
-                draw_shape(frame, s)
+            for i, shape in enumerate(shapes):
+                shape["selected"] = i == selected_shape_index
+                draw_shape(frame, shape)
 
-            # status
-            draw_text(frame, f"Shapes: {len(shapes)}", (15, 30), 0.7, GREEN)
-            draw_text(frame, "Q/ESC Ende   F Vollbild   H Hilfe   C Reset", (15, h - 55), 0.55, WHITE)
             if show_help:
-                draw_text(frame, "Daumen+Mittelfinger: Menü   Zeigefinger: ziehen   2 Finger: Größe", (15, h - 22), 0.55, WHITE)
+                draw_text(frame, "Q/ESC Ende   F Vollbild   H Hilfe   C Reset", (15, h - 55), 0.55, WHITE)
+                draw_text(frame, "Zeigefinger: Pointer   Daumen+Zeigefinger: Auswahl   Daumen+Mittelfinger: Menü", (15, h - 22), 0.55, WHITE)
+
+            draw_text(frame, f"Shapes: {len(shapes)}", (15, 30), 0.7, GREEN)
+            draw_text(frame, f"FPS: {int(fps)}", (15, 60), 0.7, GREEN)
+
+            if fullscreen:
+                draw_text(frame, "Vollbild: AN", (15, 90), 0.6, BLUE)
+            else:
+                draw_text(frame, "Vollbild: AUS", (15, 90), 0.6, BLUE)
+
+            now = time.time()
+            inst = 1.0 / max(now - (time.time() - 0.001), 1e-6)
+            fps = fps * 0.9 + inst * 0.1 if fps else inst
 
             cv2.imshow(WINDOW_NAME, frame)
             key = cv2.waitKey(1) & 0xFF
+
             if key in (27, ord("q")):
                 break
-            elif key == ord("h"):
-                show_help = not show_help
             elif key == ord("f"):
                 fullscreen = not fullscreen
                 cv2.setWindowProperty(WINDOW_NAME, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN if fullscreen else cv2.WINDOW_NORMAL)
+            elif key == ord("h"):
+                show_help = not show_help
             elif key == ord("c"):
                 shapes.clear()
-                selected_shape_id = None
+                selected_shape_index = None
 
     finally:
         landmarker.close()
