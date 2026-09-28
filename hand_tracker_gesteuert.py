@@ -184,7 +184,11 @@ def draw_shape(frame, shape):
 def draw_menu(frame, center, active_index):
     if center is None:
         return
-    cx, cy = center
+    try:
+        cx, cy = center
+    except (TypeError, ValueError):
+        return
+    
     radius = 150
     for i, kind in enumerate(MENU_OPTIONS):
         ang = -math.pi / 2 + i * (2 * math.pi / len(MENU_OPTIONS))
@@ -271,7 +275,6 @@ def main():
             pointer = None
             user_fist = False
             user_thumb_index = False
-            user_thumb_middle = False
             status_text = "Warte auf Hand..."
 
             for idx, lms in enumerate(result.hand_landmarks):
@@ -300,30 +303,59 @@ def main():
                     menu_open = True
                     menu_center = (w // 2, h // 2)
 
-                # Drag / Resize logic wenn nicht im Menü
-                if pointer is not None and not menu_open:
+            # Schließe Menü wenn keine Faust mehr erkannt wird
+            if not user_fist and menu_open:
+                menu_open = False
+                menu_center = None
+
+            # Menü Logik - NUR wenn menu_open TRUE ist
+            if menu_open and menu_center is not None and pointer is not None:
+                best_i = 0
+                best_d = 999999
+                for i, kind in enumerate(MENU_OPTIONS):
+                    ang = -math.pi / 2 + i * (2 * math.pi / len(MENU_OPTIONS))
+                    x = menu_center[0] + int(140 * math.cos(ang))
+                    y = menu_center[1] + int(140 * math.sin(ang))
+                    d = dist(pointer, (x, y))
+                    if d < best_d:
+                        best_d = d
+                        best_i = i
+                menu_active_index = best_i
+                status_text = f"Menü: {MENU_OPTIONS[menu_active_index]} | In Mitte zeigen zum Erstellen"
+
+                # Zeigefinger in die Mitte = Form erstellen
+                if dist(pointer, menu_center) < 40:
+                    kind = MENU_OPTIONS[menu_active_index]
+                    shapes.append(make_shape(kind, w // 2, h // 2, 40, MENU_COLORS[kind]))
+                    menu_open = False
+                    menu_center = None
+                    selected_shape_index = len(shapes) - 1
+                    status_text = f"Form '{kind}' erstellt!"
+
+            # Drag / Resize logic wenn NICHT im Menü
+            if pointer is not None and not menu_open:
+                for i, shape in enumerate(shapes):
+                    if point_in_shape(pointer, shape):
+                        shape["selected"] = True
+                        selected_shape_index = i
+                    else:
+                        shape["selected"] = False
+
+                if drag_shape_index is None:
                     for i, shape in enumerate(shapes):
                         if point_in_shape(pointer, shape):
-                            shape["selected"] = True
-                            selected_shape_index = i
-                        else:
-                            shape["selected"] = False
+                            drag_shape_index = i
+                            drag_prev = pointer
+                            break
 
-                    if drag_shape_index is None:
-                        for i, shape in enumerate(shapes):
-                            if point_in_shape(pointer, shape):
-                                drag_shape_index = i
-                                drag_prev = pointer
-                                break
+                if drag_shape_index is not None and drag_prev is not None:
+                    dx = pointer[0] - drag_prev[0]
+                    dy = pointer[1] - drag_prev[1]
+                    shapes[drag_shape_index]["x"] += dx
+                    shapes[drag_shape_index]["y"] += dy
+                    drag_prev = pointer
 
-                    if drag_shape_index is not None and drag_prev is not None:
-                        dx = pointer[0] - drag_prev[0]
-                        dy = pointer[1] - drag_prev[1]
-                        shapes[drag_shape_index]["x"] += dx
-                        shapes[drag_shape_index]["y"] += dy
-                        drag_prev = pointer
-
-                if user_thumb_index and pointer is not None and not menu_open:
+                if user_thumb_index:
                     best_idx = None
                     best_d = 999999
                     for i, shape in enumerate(shapes):
@@ -336,7 +368,7 @@ def main():
                         shapes[best_idx]["selected"] = True
 
                 # Zwei Finger auf Form = Größenänderung
-                if pointer is not None and len(shapes) > 0 and not menu_open:
+                if len(shapes) > 0:
                     for i, shape in enumerate(shapes):
                         if point_in_shape(pointer, shape):
                             d = dist(pointer, (shape["x"], shape["y"]))
@@ -347,38 +379,11 @@ def main():
                 drag_shape_index = None
                 drag_prev = None
 
-            # Menü Logik
+            # Zeichne Menü NUR wenn wirklich offen
             if menu_open and menu_center is not None:
-                if pointer is not None:
-                    best_i = 0
-                    best_d = 999999
-                    for i, kind in enumerate(MENU_OPTIONS):
-                        ang = -math.pi / 2 + i * (2 * math.pi / len(MENU_OPTIONS))
-                        x = menu_center[0] + int(140 * math.cos(ang))
-                        y = menu_center[1] + int(140 * math.sin(ang))
-                        d = dist(pointer, (x, y))
-                        if d < best_d:
-                            best_d = d
-                            best_i = i
-                    menu_active_index = best_i
-                    status_text = f"Menü: {MENU_OPTIONS[menu_active_index]} ausgewählt"
-
-                    # Zeigefinger in die Mitte = Form erstellen
-                    if dist(pointer, menu_center) < 35:
-                        kind = MENU_OPTIONS[menu_active_index]
-                        shapes.append(make_shape(kind, w // 2, h // 2, 40, MENU_COLORS[kind]))
-                        menu_open = False
-                        menu_center = None
-                        selected_shape_index = len(shapes) - 1
-                        status_text = f"Form '{kind}' erstellt!"
-
                 draw_menu(frame, menu_center, menu_active_index)
-            else:
-                # Menü schließen wenn keine Faust mehr
-                if not user_fist:
-                    menu_open = False
-                    menu_center = None
 
+            # Zeichne alle Formen
             for i, shape in enumerate(shapes):
                 shape["selected"] = i == selected_shape_index
                 draw_shape(frame, shape)
