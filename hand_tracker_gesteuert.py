@@ -1,5 +1,5 @@
 """
-Hand Tracker AR Drawing App - Faust-Menü Version
+Hand Tracker AR Drawing App - überarbeitete stabile Version
 
 Installation:
     pip install opencv-python mediapipe numpy
@@ -8,18 +8,19 @@ Start:
     python hand_tracker_gesteuert.py
 
 Steuerung:
-    Faust schnell machen     Menü-Rad öffnen
+    Faust schnell machen      Menü-Rad öffnen
     Zeigefinger              Pointer bewegen
     Daumen + Zeigefinger     Auswahl / Klick
-    Form mit Zeigefinger     verschieben
-    Zwei Finger auf Form     Größe ändern
+    Zeigefinger auf Form     Form verschieben
+    2 Finger auf Form        Größe ändern
     Q / ESC                  Beenden
     C                       Formen löschen
     F                       Vollbild an/aus
     H                       Hilfe an/aus
 
 Ziel:
-    Formen wie Kreis, Quadrat, Dreieck, Stern, Herz erscheinen live in der Kamera.
+    Formen wie Kreis, Quadrat, Dreieck, Stern, Herz werden live in der Kamera dargestellt.
+    Gleichzeitig wird angezeigt, was die Hand gerade erkennt.
 """
 
 import math
@@ -241,6 +242,8 @@ def main():
     start_time = time.time()
     last_ts = -1
     fps = 0.0
+    prev_time = time.time()
+    status_text = "Warte auf Hand..."
 
     cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_NORMAL)
     cv2.setWindowProperty(WINDOW_NAME, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
@@ -263,11 +266,10 @@ def main():
 
             result = landmarker.detect_for_video(mp_image, ts)
             pointer = None
-            pointer_hand_index = None
-            preselect_shape = None
             user_fist = False
             user_thumb_index = False
             user_thumb_middle = False
+            status_text = "Warte auf Hand..."
 
             for idx, lms in enumerate(result.hand_landmarks):
                 pts = to_pixels(lms, w, h)
@@ -277,33 +279,34 @@ def main():
 
                 draw_hand(frame, pts, True)
 
-                # Zeigefinger pointer
+                # Pointer: Zeigefinger allein
                 if index and not thumb and not middle and not ring and not pinky:
                     pointer = pts[INDEX_TIP]
-                    pointer_hand_index = idx
+                    status_text = "Zeigefinger aktiv: Pointer"
                     cv2.circle(frame, pointer, 10, CYAN, -1, cv2.LINE_AA)
 
-                # Daumen+Zeigefinger Auswahl/Klick
+                # Auswahl: Daumen + Zeigefinger
                 if thumb and index and not middle and not ring and not pinky:
                     user_thumb_index = True
+                    status_text = "Daumen + Zeigefinger: Auswahl"
                     cv2.line(frame, pts[THUMB_TIP], pts[INDEX_TIP], YELLOW, 2, cv2.LINE_AA)
 
-                # Faust = Menü öffnen
+                # Menü: Faust
                 if user_fist:
+                    status_text = "Faust erkannt: Menü öffnen"
                     menu_open = True
                     menu_center = (w // 2, h // 2)
                     cv2.putText(frame, "MENU", (w // 2 - 35, h // 2 - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.9, RED, 2, cv2.LINE_AA)
 
-                # find shapes under pointer for selection
+                # Drag / Resize logic
                 if pointer is not None:
                     for i, shape in enumerate(shapes):
                         if point_in_shape(pointer, shape):
-                            preselect_shape = i
                             shape["selected"] = True
+                            selected_shape_index = i
                         else:
                             shape["selected"] = False
 
-                    # drag if pointer is on shape
                     if drag_shape_index is None:
                         for i, shape in enumerate(shapes):
                             if point_in_shape(pointer, shape):
@@ -318,7 +321,6 @@ def main():
                         shapes[drag_shape_index]["y"] += dy
                         drag_prev = pointer
 
-                # if thumb-index pinch + pointer selects nearest
                 if user_thumb_index and pointer is not None:
                     best_idx = None
                     best_d = 999999
@@ -331,7 +333,7 @@ def main():
                         selected_shape_index = best_idx
                         shapes[best_idx]["selected"] = True
 
-                # two-finger resize on shape if near pointer
+                # Zwei Finger auf Form = Größenänderung
                 if pointer is not None and len(shapes) > 0:
                     for i, shape in enumerate(shapes):
                         if point_in_shape(pointer, shape):
@@ -363,29 +365,27 @@ def main():
                         menu_open = False
                         menu_center = None
                         selected_shape_index = len(shapes) - 1
+
                 draw_menu(frame, menu_center, menu_active_index)
 
             for i, shape in enumerate(shapes):
-                if i == selected_shape_index:
-                    shape["selected"] = True
-                else:
-                    shape["selected"] = False
+                shape["selected"] = i == selected_shape_index
                 draw_shape(frame, shape)
+
+            draw_text(frame, f"Status: {status_text}", (15, 25), 0.7, GREEN)
+            draw_text(frame, f"Shapes: {len(shapes)}", (15, 55), 0.7, WHITE)
+            draw_text(frame, f"FPS: {int(fps)}", (15, 85), 0.7, GREEN)
+            if fullscreen:
+                draw_text(frame, "Vollbild: AN", (15, 115), 0.6, BLUE)
+            else:
+                draw_text(frame, "Vollbild: AUS", (15, 115), 0.6, BLUE)
 
             if show_help:
                 draw_text(frame, "Q/ESC Ende   F Vollbild   H Hilfe   C Reset", (15, h - 55), 0.55, WHITE)
                 draw_text(frame, "Faust = Menü   Zeigefinger = Pointer   Daumen+Zeigefinger = Auswahl", (15, h - 22), 0.55, WHITE)
 
-            draw_text(frame, f"Shapes: {len(shapes)}", (15, 30), 0.7, GREEN)
-            draw_text(frame, f"FPS: {int(fps)}", (15, 60), 0.7, GREEN)
-
-            if fullscreen:
-                draw_text(frame, "Vollbild: AN", (15, 90), 0.6, BLUE)
-            else:
-                draw_text(frame, "Vollbild: AUS", (15, 90), 0.6, BLUE)
-
             now = time.time()
-            inst = 1.0 / max(now - prev_time if 'prev_time' in locals() else now, 1e-6)
+            inst = 1.0 / max(now - prev_time, 1e-6)
             fps = fps * 0.9 + inst * 0.1 if fps else inst
             prev_time = now
 
@@ -402,6 +402,8 @@ def main():
                 shapes.clear()
                 selected_shape_index = None
                 drag_shape_index = None
+                menu_open = False
+                menu_center = None
 
     finally:
         landmarker.close()
