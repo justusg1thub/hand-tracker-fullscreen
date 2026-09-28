@@ -10,6 +10,7 @@ Start:
 Steuerung:
     Faust schnell machen      Menü-Rad öffnen
     Zeigefinger              Pointer bewegen
+    Zeigefinger auf Form     Form im Menü auswählen
     Daumen + Zeigefinger     Auswahl / Klick
     Zeigefinger auf Form     Form verschieben
     2 Finger auf Form        Größe ändern
@@ -181,6 +182,8 @@ def draw_shape(frame, shape):
 
 
 def draw_menu(frame, center, active_index):
+    if center is None:
+        return
     cx, cy = center
     radius = 150
     for i, kind in enumerate(MENU_OPTIONS):
@@ -296,10 +299,9 @@ def main():
                     status_text = "Faust erkannt: Menü öffnen"
                     menu_open = True
                     menu_center = (w // 2, h // 2)
-                    cv2.putText(frame, "MENU", (w // 2 - 35, h // 2 - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.9, RED, 2, cv2.LINE_AA)
 
-                # Drag / Resize logic
-                if pointer is not None:
+                # Drag / Resize logic wenn nicht im Menü
+                if pointer is not None and not menu_open:
                     for i, shape in enumerate(shapes):
                         if point_in_shape(pointer, shape):
                             shape["selected"] = True
@@ -321,7 +323,7 @@ def main():
                         shapes[drag_shape_index]["y"] += dy
                         drag_prev = pointer
 
-                if user_thumb_index and pointer is not None:
+                if user_thumb_index and pointer is not None and not menu_open:
                     best_idx = None
                     best_d = 999999
                     for i, shape in enumerate(shapes):
@@ -334,7 +336,7 @@ def main():
                         shapes[best_idx]["selected"] = True
 
                 # Zwei Finger auf Form = Größenänderung
-                if pointer is not None and len(shapes) > 0:
+                if pointer is not None and len(shapes) > 0 and not menu_open:
                     for i, shape in enumerate(shapes):
                         if point_in_shape(pointer, shape):
                             d = dist(pointer, (shape["x"], shape["y"]))
@@ -345,6 +347,7 @@ def main():
                 drag_shape_index = None
                 drag_prev = None
 
+            # Menü Logik
             if menu_open and menu_center is not None:
                 if pointer is not None:
                     best_i = 0
@@ -358,15 +361,23 @@ def main():
                             best_d = d
                             best_i = i
                     menu_active_index = best_i
+                    status_text = f"Menü: {MENU_OPTIONS[menu_active_index]} ausgewählt"
 
-                    if dist(pointer, menu_center) < 30:
+                    # Zeigefinger in die Mitte = Form erstellen
+                    if dist(pointer, menu_center) < 35:
                         kind = MENU_OPTIONS[menu_active_index]
-                        shapes.append(make_shape(kind, pointer[0], pointer[1], 40, MENU_COLORS[kind]))
+                        shapes.append(make_shape(kind, w // 2, h // 2, 40, MENU_COLORS[kind]))
                         menu_open = False
                         menu_center = None
                         selected_shape_index = len(shapes) - 1
+                        status_text = f"Form '{kind}' erstellt!"
 
                 draw_menu(frame, menu_center, menu_active_index)
+            else:
+                # Menü schließen wenn keine Faust mehr
+                if not user_fist:
+                    menu_open = False
+                    menu_center = None
 
             for i, shape in enumerate(shapes):
                 shape["selected"] = i == selected_shape_index
