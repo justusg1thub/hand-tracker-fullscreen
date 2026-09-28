@@ -1,5 +1,5 @@
 """
-Hand Tracker AR Drawing App - stabilere Version
+Hand Tracker AR Drawing App - Faust-Menü Version
 
 Installation:
     pip install opencv-python mediapipe numpy
@@ -8,15 +8,15 @@ Start:
     python hand_tracker_gesteuert.py
 
 Steuerung:
-    Zeigefinger            Pointer bewegen
-    Daumen + Zeigefinger   Auswahl / Klick
-    Daumen + Mittelfinger  Formen-Menü öffnen
-    2 Finger auf Form      Größe ändern
-    Form mit Zeigefinger   verschieben
-    Q / ESC                Beenden
-    C                     Formen löschen
-    F                     Vollbild an/aus
-    H                     Hilfe an/aus
+    Faust schnell machen     Menü-Rad öffnen
+    Zeigefinger              Pointer bewegen
+    Daumen + Zeigefinger     Auswahl / Klick
+    Form mit Zeigefinger     verschieben
+    Zwei Finger auf Form     Größe ändern
+    Q / ESC                  Beenden
+    C                       Formen löschen
+    F                       Vollbild an/aus
+    H                       Hilfe an/aus
 
 Ziel:
     Formen wie Kreis, Quadrat, Dreieck, Stern, Herz erscheinen live in der Kamera.
@@ -107,25 +107,22 @@ def point_in_shape(pt, shape):
     x, y = pt
     sx, sy = shape["x"], shape["y"]
     s = shape["size"]
-    if shape["kind"] == "circle":
+    kind = shape["kind"]
+    if kind == "circle":
         return (x - sx) ** 2 + (y - sy) ** 2 <= s ** 2
-    if shape["kind"] == "square":
+    if kind == "square":
         return abs(x - sx) <= s and abs(y - sy) <= s
-    if shape["kind"] == "triangle":
+    if kind == "triangle":
         return abs(x - sx) + abs(y - sy) <= s * 1.2
-    if shape["kind"] == "star":
+    if kind == "star":
         return (x - sx) ** 2 + (y - sy) ** 2 <= (s * 1.3) ** 2
-    if shape["kind"] == "heart":
+    if kind == "heart":
         return (x - sx) ** 2 + (y - sy) ** 2 <= (s * 1.5) ** 2
     return False
 
 
 def make_shape(kind, x, y, size, color):
     return {"kind": kind, "x": x, "y": y, "size": size, "color": color, "selected": False}
-
-
-def point_list_to_np(points):
-    return np.array(points, dtype=np.int32)
 
 
 def draw_text(img, text, org, scale=0.7, color=WHITE, thickness=2):
@@ -166,7 +163,7 @@ def draw_shape(frame, shape):
             px = x + r * math.cos(ang)
             py = y + r * math.sin(ang)
             star_pts.append((int(px), int(py)))
-        cv2.polylines(frame, [point_list_to_np(star_pts)], True, color, 4, cv2.LINE_AA)
+        cv2.polylines(frame, [np.array(star_pts, dtype=np.int32)], True, color, 4, cv2.LINE_AA)
     elif kind == "heart":
         pts = []
         for i in range(0, 360, 5):
@@ -176,7 +173,7 @@ def draw_shape(frame, shape):
             px = int(x + sx * size / 18)
             py = int(y + sy * size / 18)
             pts.append((px, py))
-        cv2.polylines(frame, [point_list_to_np(pts)], False, color, 4, cv2.LINE_AA)
+        cv2.polylines(frame, [np.array(pts, dtype=np.int32)], False, color, 4, cv2.LINE_AA)
 
     if shape.get("selected"):
         cv2.circle(frame, (x, y), size + 12, (255, 255, 255), 2, cv2.LINE_AA)
@@ -208,6 +205,10 @@ def get_fingers(points):
     return [thumb, index, middle, ring, pinky]
 
 
+def is_fist(fingers):
+    return not any(fingers)
+
+
 def main():
     ensure_model()
 
@@ -231,11 +232,10 @@ def main():
     shapes = []
     selected_shape_index = None
     drag_shape_index = None
-    drag_prev_pt = None
+    drag_prev = None
     menu_open = False
     menu_center = None
-    menu_active = 0
-
+    menu_active_index = 0
     show_help = True
     fullscreen = True
     start_time = time.time()
@@ -264,63 +264,62 @@ def main():
             result = landmarker.detect_for_video(mp_image, ts)
             pointer = None
             pointer_hand_index = None
-            index_finger_open = False
-            thumb_middle_pinch = False
-            thumb_index_pinch = False
+            preselect_shape = None
+            user_fist = False
+            user_thumb_index = False
+            user_thumb_middle = False
 
             for idx, lms in enumerate(result.hand_landmarks):
                 pts = to_pixels(lms, w, h)
                 fingers = get_fingers(pts)
                 thumb, index, middle, ring, pinky = fingers
+                user_fist = is_fist(fingers)
 
                 draw_hand(frame, pts, True)
 
-                # 1) Zeigefinger = Pointer
-                pointer_flag = index and not thumb and not middle and not ring and not pinky
-                if pointer_flag:
+                # Zeigefinger pointer
+                if index and not thumb and not middle and not ring and not pinky:
                     pointer = pts[INDEX_TIP]
                     pointer_hand_index = idx
-                    cv2.circle(frame, pointer, 9, CYAN, -1, cv2.LINE_AA)
-                    index_finger_open = True
+                    cv2.circle(frame, pointer, 10, CYAN, -1, cv2.LINE_AA)
 
-                # 2) Daumen + Zeigefinger = Auswahl / Klick
+                # Daumen+Zeigefinger Auswahl/Klick
                 if thumb and index and not middle and not ring and not pinky:
-                    thumb_index_pinch = True
+                    user_thumb_index = True
                     cv2.line(frame, pts[THUMB_TIP], pts[INDEX_TIP], YELLOW, 2, cv2.LINE_AA)
 
-                # 3) Daumen + Mittelfinger = Menü
-                if thumb and middle and not index and not ring and not pinky:
-                    thumb_middle_pinch = True
-                    cv2.line(frame, pts[THUMB_TIP], pts[MIDDLE_TIP], ORANGE, 2, cv2.LINE_AA)
+                # Faust = Menü öffnen
+                if user_fist:
+                    menu_open = True
+                    menu_center = (w // 2, h // 2)
+                    cv2.putText(frame, "MENU", (w // 2 - 35, h // 2 - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.9, RED, 2, cv2.LINE_AA)
 
-                # Auswahl/drag
+                # find shapes under pointer for selection
                 if pointer is not None:
-                    # find shape under pointer
                     for i, shape in enumerate(shapes):
                         if point_in_shape(pointer, shape):
+                            preselect_shape = i
                             shape["selected"] = True
-                            selected_shape_index = i
                         else:
                             shape["selected"] = False
 
-                    # if not dragging and selected shape, start drag by pointer
+                    # drag if pointer is on shape
                     if drag_shape_index is None:
                         for i, shape in enumerate(shapes):
                             if point_in_shape(pointer, shape):
                                 drag_shape_index = i
-                                drag_prev_pt = pointer
+                                drag_prev = pointer
                                 break
 
-                    # move selected shape while dragging
-                    if drag_shape_index is not None and drag_prev_pt is not None:
-                        dx = pointer[0] - drag_prev_pt[0]
-                        dy = pointer[1] - drag_prev_pt[1]
+                    if drag_shape_index is not None and drag_prev is not None:
+                        dx = pointer[0] - drag_prev[0]
+                        dy = pointer[1] - drag_prev[1]
                         shapes[drag_shape_index]["x"] += dx
                         shapes[drag_shape_index]["y"] += dy
-                        drag_prev_pt = pointer
+                        drag_prev = pointer
 
-                # if user makes a thumb-index pinch, select nearest shape
-                if thumb_index_pinch and pointer is not None:
+                # if thumb-index pinch + pointer selects nearest
+                if user_thumb_index and pointer is not None:
                     best_idx = None
                     best_d = 999999
                     for i, shape in enumerate(shapes):
@@ -332,56 +331,50 @@ def main():
                         selected_shape_index = best_idx
                         shapes[best_idx]["selected"] = True
 
-                # if pointer plus two finger hold on shape, resize
+                # two-finger resize on shape if near pointer
                 if pointer is not None and len(shapes) > 0:
                     for i, shape in enumerate(shapes):
                         if point_in_shape(pointer, shape):
-                            # rough size scaling by index finger distance to center
-                            # simpler: use pointer distance to center to decide size
                             d = dist(pointer, (shape["x"], shape["y"]))
-                            if d < 100:
-                                shape["size"] = max(20, min(120, int(d * 0.5)))
+                            if d < 120:
+                                shape["size"] = max(25, min(110, int(d * 0.7)))
 
-            if thumb_middle_pinch:
-                menu_open = True
-                menu_center = (w // 2, h // 2)
+            if pointer is None:
+                drag_shape_index = None
+                drag_prev = None
 
             if menu_open and menu_center is not None:
-                menu_radius = 140
                 if pointer is not None:
                     best_i = 0
                     best_d = 999999
                     for i, kind in enumerate(MENU_OPTIONS):
                         ang = -math.pi / 2 + i * (2 * math.pi / len(MENU_OPTIONS))
-                        x = menu_center[0] + int(menu_radius * math.cos(ang))
-                        y = menu_center[1] + int(menu_radius * math.sin(ang))
+                        x = menu_center[0] + int(140 * math.cos(ang))
+                        y = menu_center[1] + int(140 * math.sin(ang))
                         d = dist(pointer, (x, y))
                         if d < best_d:
                             best_d = d
                             best_i = i
-                    menu_active = best_i
-                    # if near center, create selected shape
-                    if dist(pointer, menu_center) < 35:
-                        kind = MENU_OPTIONS[best_i]
+                    menu_active_index = best_i
+
+                    if dist(pointer, menu_center) < 30:
+                        kind = MENU_OPTIONS[menu_active_index]
                         shapes.append(make_shape(kind, pointer[0], pointer[1], 40, MENU_COLORS[kind]))
                         menu_open = False
                         menu_center = None
                         selected_shape_index = len(shapes) - 1
-                draw_menu(frame, menu_center, menu_active)
+                draw_menu(frame, menu_center, menu_active_index)
 
-            # if no pointer, release drag
-            if pointer is None:
-                drag_shape_index = None
-                drag_prev_pt = None
-
-            # draw all shapes
             for i, shape in enumerate(shapes):
-                shape["selected"] = i == selected_shape_index
+                if i == selected_shape_index:
+                    shape["selected"] = True
+                else:
+                    shape["selected"] = False
                 draw_shape(frame, shape)
 
             if show_help:
                 draw_text(frame, "Q/ESC Ende   F Vollbild   H Hilfe   C Reset", (15, h - 55), 0.55, WHITE)
-                draw_text(frame, "Zeigefinger: Pointer   Daumen+Zeigefinger: Auswahl   Daumen+Mittelfinger: Menü", (15, h - 22), 0.55, WHITE)
+                draw_text(frame, "Faust = Menü   Zeigefinger = Pointer   Daumen+Zeigefinger = Auswahl", (15, h - 22), 0.55, WHITE)
 
             draw_text(frame, f"Shapes: {len(shapes)}", (15, 30), 0.7, GREEN)
             draw_text(frame, f"FPS: {int(fps)}", (15, 60), 0.7, GREEN)
@@ -392,12 +385,12 @@ def main():
                 draw_text(frame, "Vollbild: AUS", (15, 90), 0.6, BLUE)
 
             now = time.time()
-            inst = 1.0 / max(now - (time.time() - 0.001), 1e-6)
+            inst = 1.0 / max(now - prev_time if 'prev_time' in locals() else now, 1e-6)
             fps = fps * 0.9 + inst * 0.1 if fps else inst
+            prev_time = now
 
             cv2.imshow(WINDOW_NAME, frame)
             key = cv2.waitKey(1) & 0xFF
-
             if key in (27, ord("q")):
                 break
             elif key == ord("f"):
@@ -408,6 +401,7 @@ def main():
             elif key == ord("c"):
                 shapes.clear()
                 selected_shape_index = None
+                drag_shape_index = None
 
     finally:
         landmarker.close()
