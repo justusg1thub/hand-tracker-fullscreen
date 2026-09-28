@@ -541,7 +541,6 @@ def main():
     camera.set(cv2.CAP_PROP_FRAME_WIDTH, 1920)
     camera.set(cv2.CAP_PROP_FRAME_HEIGHT, 1080)
     camera.set(cv2.CAP_PROP_AUTOFOCUS, 1)
-    camera.set(cv2.CAP_PROP_FOCUS_AUTO, 1)
 
     if not camera.isOpened():
         print("Kamera konnte nicht geöffnet werden.")
